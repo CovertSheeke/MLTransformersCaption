@@ -1,6 +1,8 @@
 import os, json, torch, urllib.request as url, zipfile, random
 from PIL import Image
 from torchvision.transforms import Compose, Resize, ToTensor, Normalize
+from datasets import load_dataset
+from tqdm import tqdm
 
 def get_flickr_data(max_samples=100000, val_split=0.2, batch_size=16):
     # Download images (Flickr8k)
@@ -62,3 +64,57 @@ def get_flickr_data(max_samples=100000, val_split=0.2, batch_size=16):
             yield pil_images, captions
     
     return lambda: batches(train_data), lambda: batches(val_data)
+
+def get_disco_data(max_samples=100000, val_split=1, batch_size=16):
+    # Download and load the dataset from HuggingFace (e.g., "ntkuhn/mlx_dropouts_images")
+    ds = load_dataset("ntkuhn/mlx_dropouts_images")
+    data = []
+    disco_dir = "data/disco"
+    os.makedirs(disco_dir, exist_ok=True)
+    images_dir = os.path.join(disco_dir, "images")
+    os.makedirs(images_dir, exist_ok=True)
+    captions_file = os.path.join(disco_dir, "captions.json")
+    # Use tqdm for download/saving progress
+    dataset = ds['train']
+    for idx, item in enumerate(tqdm(dataset, desc="Downloading & saving images", total=min(len(dataset), max_samples))):
+        if "image" in item and "description" in item:
+            img = item['image']
+            img_filename = f"{idx}.jpg"
+            img_path = os.path.join(images_dir, img_filename)
+            if isinstance(img, Image.Image):
+                img.save(img_path)
+            else:
+                Image.open(img).convert('RGB').save(img_path)
+            data.append({'image': img_filename, 'caption': item['description']})
+        if len(data) >= max_samples:
+            break
+
+    # Save captions to JSON
+    with tqdm(total=1, desc="Saving captions") as pbar:
+        with open(captions_file, "w") as f:
+            json.dump(data, f)
+        pbar.update(1)
+
+    random.shuffle(data)
+    split = int(len(data) * (1 - val_split))
+    train_data, val_data = data[:split], data[split:]
+
+    resize_transform = Resize((224, 224))
+
+    def batches(data):
+        for i in tqdm(range(0, len(data), batch_size), desc="Batching"):
+            batch = data[i:i+batch_size]
+            pil_images = []
+            for item in batch:
+                img_path = os.path.join(images_dir, item['image'])
+                if os.path.exists(img_path):
+                    img = Image.open(img_path).convert('RGB')
+                    pil_images.append(resize_transform(img))
+                else:
+                    pil_images.append(Image.new('RGB', (224, 224)))
+            captions = [item['caption'] for item in batch]
+            yield pil_images, captions
+
+    return lambda: batches(train_data), lambda: batches(val_data)
+
+get_disco_data = get_disco_data(max_samples=100000, val_split=1, batch_size=16)
